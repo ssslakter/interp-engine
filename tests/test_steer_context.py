@@ -22,7 +22,7 @@ import threading
 import pytest
 import torch
 
-from interp_engine import AddSpec, LayerSteeringSpec, SteeringSpec, SteerSpec, steer
+from interp_engine import AddSpec, LayerSteeringSpec, SteeringSpec, SteerSpec, TokenPhase, steer
 from interp_engine.steer import active_steering
 
 
@@ -48,6 +48,22 @@ def test_a_block_records_its_spec_for_the_duration() -> None:
         assert open_now is not None
         assert list(open_now.spec.layers) == [3]
     assert active_steering(model) is None
+
+
+def test_a_block_records_its_token_phase() -> None:
+    model, spec = NotEager(), _spec(3)
+    with steer(model, spec, phase=TokenPhase.DECODE):
+        open_now = active_steering(model)
+        assert open_now is not None
+        assert open_now.phase is TokenPhase.DECODE
+
+
+def test_a_string_phase_is_refused_instead_of_silently_meaning_both() -> None:
+    with (
+        pytest.raises(TypeError, match="TokenPhase"),
+        steer(NotEager(), _spec(3), phase="decode"),  # pyright: ignore[reportArgumentType]
+    ):
+        pass
 
 
 def test_the_recording_is_keyed_on_the_model() -> None:

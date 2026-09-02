@@ -160,6 +160,11 @@ CAPABILITIES: dict[str, Capability] = {
         ),
         instead=("n_logprobs=N for the top N at each step, which is what GenStep.logprobs carries on both backends"),
     ),
+    "gdn_recurrence": Capability(
+        what="direct access to Qwen Gated DeltaNet recurrence tensors",
+        why="vLLM keeps Q/K/V, gates, recurrent state, and the state read inside fused kernels",
+        instead="loading the model with backend='eager' and using run_with_cache or intervene_gdn",
+    ),
 }
 
 

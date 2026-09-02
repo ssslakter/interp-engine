@@ -13,7 +13,7 @@
   <a href="https://join.slack.com/t/opensourcemechanistic/shared_invite/zt-3z9o0hxjl-MDX9pbATO2qESOazNDLpdQ"><img src="https://img.shields.io/badge/Slack-Open%20Source%20Mechanistic%20Interpretability-4A154B?logo=slack&logoColor=white" alt="Join the Slack"></a>
 </p>
 
-`interp-engine` is an interpretability engine that is fast, standardized (34 'points'/addresses across architectures), and easy to use and debug. It powers all of [Neuronpedia](https://neuronpedia.org)'s inference and is checked for accuracy against HF Transformers and other engines.
+`interp-engine` is an interpretability engine that is fast, standardized (45 'points'/addresses across architectures), and easy to use and debug. It powers all of [Neuronpedia](https://neuronpedia.org)'s inference and is checked for accuracy against HF Transformers and other engines.
 
 <p align="center">
   <img src="https://neuronpedia.s3.amazonaws.com/site-assets/ie-benchmark.gif" alt="benchmark between ie and transformers" width="100%">
@@ -66,7 +66,7 @@ Add "use interp-engine" to your prompt and let your agent figure it out - everyt
 
 ## Supported Points ("Addresses")
 
-`interp-engine` supports 34 standardized points ("Addresses") across architectures: every one of them on the eager backend, 28 of them on vLLM. Check [interp-engine.org](https://interp-engine.org) for the "cheat sheet", or [SUPPORTED_POINTS.md](docs/SUPPORTED_POINTS.md) for a markdown version with the per-backend detail.
+`interp-engine` supports 45 standardized points ("Addresses") across architectures: every one of them on the eager backend, 28 of them on vLLM. Check [interp-engine.org](https://interp-engine.org) for the "cheat sheet", or [SUPPORTED_POINTS.md](docs/SUPPORTED_POINTS.md) for a markdown version with the per-backend detail.
 
 ## Performance / Speed
 

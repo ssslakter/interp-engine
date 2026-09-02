@@ -23,6 +23,7 @@ import torch.nn.functional as F
 
 from interp_engine.arch import special_token_positions
 from interp_engine.dispatch import CapabilityUnsupported, TokensLike, as_batched_tokens, as_token_ids
+from interp_engine.gdn import TokenPhase, token_phase
 from interp_engine.hooks import HookManager, flat_per_head
 from interp_engine.model import EagerModel
 from interp_engine.protocol import InterpModel
@@ -229,6 +230,7 @@ class ActiveSteering:
 
     spec: SteeringSpec
     position_mask: PositionMask | None
+    phase: TokenPhase
 
 
 # Which model has an open non-eager `steer()` context, and with what. A ContextVar rather than an
@@ -253,7 +255,9 @@ def active_steering(model: object) -> ActiveSteering | None:
     return entry[1]
 
 
-def _merge_steering(existing: ActiveSteering | None, spec: SteeringSpec, mask: PositionMask | None) -> ActiveSteering:
+def _merge_steering(
+    existing: ActiveSteering | None, spec: SteeringSpec, mask: PositionMask | None, phase: TokenPhase
+) -> ActiveSteering:
     """Combine a nested :func:`steer` with the one already open, as eager's stacked hooks would.
 
     Nesting composes on eager for free -- two hook sets both fire -- so it composes here too
@@ -262,7 +266,12 @@ def _merge_steering(existing: ActiveSteering | None, spec: SteeringSpec, mask: P
     inside "steer everything except B" that is obviously the one the caller meant.
     """
     if existing is None:
-        return ActiveSteering(spec=spec, position_mask=mask)
+        return ActiveSteering(spec=spec, position_mask=mask, phase=phase)
+    if existing.phase is not phase:
+        raise ValueError(
+            f"Nested steer() blocks on a non-eager model use different phases "
+            f"({existing.phase.value!r} then {phase.value!r}); combine each phase into one spec"
+        )
     if mask is not None and existing.position_mask is not None and mask != existing.position_mask:
         raise ValueError(
             "Nested steer() blocks on the same model gave two different position_masks "
@@ -273,7 +282,7 @@ def _merge_steering(existing: ActiveSteering | None, spec: SteeringSpec, mask: P
     layers = {layer: LayerSteeringSpec(operations=list(ls.operations)) for layer, ls in existing.spec.layers.items()}
     for layer, layer_spec in spec.layers.items():
         layers.setdefault(layer, LayerSteeringSpec()).operations.extend(layer_spec.operations)
-    return ActiveSteering(spec=SteeringSpec(layers=layers), position_mask=mask or existing.position_mask)
+    return ActiveSteering(spec=SteeringSpec(layers=layers), position_mask=mask or existing.position_mask, phase=phase)
 
 
 @contextmanager
@@ -283,6 +292,7 @@ def steer(
     *,
     prompt_token_ids: Any = None,
     position_mask: PositionMask | None = None,
+    phase: TokenPhase = TokenPhase.BOTH,
 ) -> Iterator[HookManager | None]:
     """Steer for the duration of the context, on either backend.
 
@@ -298,6 +308,10 @@ def steer(
     steered (they are past the prompt and so never in the mask). This mirrors the inference
     app's ``steer_special_tokens`` behavior, generically across model families.
 
+    ``phase`` independently selects prompt processing (``PREFILL``), fed-back generated-token
+    processing (``DECODE``), or both. Decode-only steering cannot affect the first sampled token,
+    whose logits are produced by prefill.
+
     Yields the :class:`~interp_engine.hooks.HookManager` on eager, and ``None`` elsewhere --
     there is no in-process hook set to hand back when the hooks live in a worker. Nothing needs
     the value; ``with steer(model, spec):`` is the usual form.
@@ -309,6 +323,7 @@ def steer(
     from anywhere else in the process would be silently steered too. See
     ``docs/CROSS_SERVER_APIS.md`` and that method's own docstring.
     """
+    phase = token_phase(phase)
     if not isinstance(model, EagerModel):
         if isinstance(spec, list):
             raise CapabilityUnsupported(
@@ -318,7 +333,7 @@ def steer(
                 "SteeringSpec (interp_engine.SteeringSpec / AddSpec / OrthogonalDecompSpec / "
                 "ProjectionCapSpec), which converts to either backend."
             )
-        token = _OPEN_STEERING.set((id(model), _merge_steering(active_steering(model), spec, position_mask)))
+        token = _OPEN_STEERING.set((id(model), _merge_steering(active_steering(model), spec, position_mask, phase)))
         try:
             yield None
         finally:
@@ -365,9 +380,10 @@ def steer(
                 # prompt (prefill) forward covers positions [0, prompt_len); every forward after
                 # generates one token, so positions >= prompt_len are never masked.
                 consumed = 0
+                prompt_len = int(torch.as_tensor(prompt_token_ids).shape[-1]) if prompt_token_ids is not None else None
 
                 def _fn(full: torch.Tensor) -> torch.Tensor:
-                    nonlocal consumed
+                    nonlocal consumed, prompt_len
                     # Everything below operates on one stream's `d_model` slice when the group named
                     # one, so the masking and the two methods stay written against the shape they
                     # were written for, and the untouched streams are put back verbatim at the end.
@@ -376,9 +392,18 @@ def steer(
                     if kv_heads is not None:
                         tensor, per_head = flat_per_head(tensor, heads=kv_heads)
                     seq = tensor.shape[1] if tensor.ndim >= 2 else tensor.shape[0]
+                    if prompt_len is None:
+                        prompt_len = seq
                     keep = None  # per-position steering multiplier for this forward (None => all 1)
-                    if masked_positions:
-                        local = [p - consumed for p in masked_positions if consumed <= p < consumed + seq]
+                    phase_skips = {
+                        position
+                        for position in range(consumed, consumed + seq)
+                        if (phase is TokenPhase.PREFILL and position >= prompt_len)
+                        or (phase is TokenPhase.DECODE and position < prompt_len)
+                    }
+                    skipped = masked_positions | phase_skips
+                    if skipped:
+                        local = [p - consumed for p in skipped if consumed <= p < consumed + seq]
                         if local:
                             m = torch.ones(seq, device=tensor.device, dtype=tensor.dtype)
                             m[local] = 0.0
@@ -617,6 +642,7 @@ def _generate_stream_via_protocol(
             seed=seed,
             steering_spec=None if steering is None else steering.spec,
             position_mask=None if steering is None else steering.position_mask,
+            steering_phase=TokenPhase.BOTH if steering is None else steering.phase,
         ),
         what="generate_stream()",
     )

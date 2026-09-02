@@ -55,6 +55,9 @@ files and why they are where they are.
   `steer_delta` branch, which is what the vLLM worker's modifier computes too and what
   `tests/test_steer_math_parity.py` runs against it on CPU; `steer()` is the context both backends
   take, registering per-request on vLLM rather than installing a global hook.
+- `gdn.py` — eager Qwen Gated DeltaNet recurrence instrumentation. It swaps the fused recurrence
+  for the sequential fp32 reference only while a GDN capture/intervention context is active, then
+  restores the original mixer and gated norm methods.
 - `mappers.py` — translation between canonical points and other frameworks' names:
   TransformerLens hook strings and nnsight/nnterp accessors, both directions. See [Porting from
   TransformerLens, nnsight or nnterp](PORTING.md#porting-from-transformerlens-nnsight-or-nnterp).

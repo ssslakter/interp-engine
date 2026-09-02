@@ -27,6 +27,7 @@ from interp_engine.address import Address, to_address
 from interp_engine.attn_scores import capture_attn_scores
 from interp_engine.dispatch import TokensLike, as_batched_tokens, as_token_ids, refuse
 from interp_engine.facts import text_config
+from interp_engine.gdn import GDN_POINTS, capture_gdn
 from interp_engine.hooks import HookManager, flat_per_head
 from interp_engine.model import EagerModel
 from interp_engine.points import token_flattened
@@ -154,6 +155,15 @@ def _normalize_points(points: Sequence[AddressLike]) -> list[Address]:
     return [to_address(p) for p in points]
 
 
+def _selected_positions(positions: Sequence[int] | None, length: int) -> tuple[int, ...] | None:
+    if positions is None:
+        return None
+    selected = tuple(int(position) for position in positions)
+    if len(set(selected)) != len(selected) or any(position < 0 or position >= length for position in selected):
+        raise ValueError(f"capture positions must be unique and within this {length}-token forward, got {selected}")
+    return selected
+
+
 def run_with_cache(
     model: InterpModel,
     tokens: TokensLike,
@@ -161,6 +171,7 @@ def run_with_cache(
     *,
     detach: bool = True,
     attention_mask: torch.Tensor | None = None,
+    positions: Sequence[int] | None = None,
 ) -> Cache:
     """Run a single forward pass, capturing the requested points into a :class:`Cache`.
 
@@ -174,10 +185,18 @@ def run_with_cache(
     ``detach=True`` (the default, for activation endpoints) stores detached clones. Pass
     ``detach=False`` to keep the autograd graph (the lens does this on residuals); it raises
     on vLLM, and on eager unless the model was built with ``requires_grad=True``.
+
+    ``positions`` keeps only those zero-based absolute positions. For attention matrices it selects
+    query rows; for every token-major point it selects the token axis. GDN state captures require it
+    because one state matrix per token is otherwise easy to allocate accidentally.
     """
     if not isinstance(model, EagerModel):
-        return _run_with_cache_via_protocol(model, tokens, points, detach=detach, attention_mask=attention_mask)
-    return _run_with_cache_eager(model, tokens, points, detach=detach, attention_mask=attention_mask)
+        return _run_with_cache_via_protocol(
+            model, tokens, points, detach=detach, attention_mask=attention_mask, positions=positions
+        )
+    return _run_with_cache_eager(
+        model, tokens, points, detach=detach, attention_mask=attention_mask, positions=positions
+    )
 
 
 def _run_with_cache_via_protocol(
@@ -187,6 +206,7 @@ def _run_with_cache_via_protocol(
     *,
     detach: bool,
     attention_mask: torch.Tensor | None,
+    positions: Sequence[int] | None,
 ) -> Cache:
     """The non-eager arm: one prompt through :meth:`InterpModel.capture`, shaped like a Cache.
 
@@ -208,6 +228,8 @@ def _run_with_cache_via_protocol(
         ids,
         _normalize_points(points),
         steering_spec=None if steering is None else steering.spec,
+        positions=positions,
+        steering_phase=None if steering is None else steering.phase,
         detach=detach,
     )
     # Restore the batch axis the eager path keeps, so `cache[point][0]` means the same thing on
@@ -222,9 +244,11 @@ def _run_with_cache_eager(
     *,
     detach: bool = True,
     attention_mask: torch.Tensor | None = None,
+    positions: Sequence[int] | None = None,
 ) -> Cache:
     """Capture in-process off the live module tree. See :func:`run_with_cache`."""
     input_ids = as_batched_tokens(tokens)
+    selected_positions = _selected_positions(positions, int(input_ids.shape[-1]))
     addresses = _normalize_points(points)
     cache = Cache()
 
@@ -238,7 +262,12 @@ def _run_with_cache_eager(
     conventions = {a: model.derived_routing(a.name, a.layer) for a in addresses}
     derived = [a for a in addresses if conventions[a] is not None]
     rebuilt = set(derived)
-    hookable = [a for a in addresses if a.name not in ("attn_probs", "attn_scores") and a not in rebuilt]
+    gdn_addresses = [a for a in addresses if a.name in GDN_POINTS]
+    hookable = [
+        a
+        for a in addresses
+        if a.name not in ("attn_probs", "attn_scores") and a.name not in GDN_POINTS and a not in rebuilt
+    ]
     borrowed = sorted(
         {Address(moe_routing.SOURCE_POINT, a.layer) for a in derived} - set(hookable),
         key=lambda a: a.layer or 0,
@@ -301,7 +330,17 @@ def _run_with_cache_eager(
 
         return _reader
 
-    with HookManager() as hm, capture_attn_scores(model, score_layers, detach=detach) as scores:
+    with (
+        HookManager() as hm,
+        capture_attn_scores(model, score_layers, detach=detach) as scores,
+        capture_gdn(
+            model,
+            gdn_addresses,
+            prompt_len=int(input_ids.shape[-1]),
+            positions=selected_positions,
+            detach=detach,
+        ) as finish_gdn,
+    ):
         # Distinct point names can resolve to the same ``(module, input/output)`` target:
         # ``mlp_out_post`` aliases ``mlp_out`` on every architecture without post-sublayer norms.
         # Registering one hook per target and fanning it out to each requested key keeps the alias
@@ -329,6 +368,7 @@ def _run_with_cache_eager(
                 use_cache=False,
             )
         cache.output = output
+        cache.tensors.update(finish_gdn())
         for layer, tensor in scores.items():
             cache.tensors[Address("attn_scores", layer)] = tensor
 
@@ -421,6 +461,15 @@ def _run_with_cache_eager(
                 t = attentions[index]
                 cache.tensors[address] = t.detach().clone() if detach else t
 
+    if selected_positions is not None:
+        for key, tensor in list(cache.tensors.items()):
+            if key.name in GDN_POINTS:
+                continue
+            if key.name in {"attn_scores", "attn_probs"}:
+                cache.tensors[key] = tensor[:, :, selected_positions]
+            else:
+                cache.tensors[key] = tensor[:, selected_positions]
+
     return cache
 
 
@@ -432,6 +481,7 @@ def capture_generation(
     max_tokens: int = 8,
     temperature: float = 0.0,
     seed: int | None = None,
+    positions: Sequence[int] | None = None,
 ) -> tuple[Any, Cache]:
     """Generate from ``tokens``, capturing ``points`` at prompt *and* generated positions.
 
@@ -461,6 +511,8 @@ def capture_generation(
         temperature=temperature,
         seed=seed,
         steering_spec=None if steering is None else steering.spec,
+        positions=positions,
+        steering_phase=None if steering is None else steering.phase,
     )
     return completion, Cache(tensors={a: t.unsqueeze(0) for a, t in captured.items()}, output=None)
 

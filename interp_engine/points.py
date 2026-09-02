@@ -91,6 +91,7 @@ class Width(Enum):
     # doubly-stochastic matrix and a per-rank slice of that mixture is not a partial sum of
     # anything. So a width check here is meaningful under TP in a way `HEADS` and `NEURONS` are not.
     STREAMS = "n_residual_streams"
+    GDN = "structured GDN tensor"
 
     @classmethod
     def sharded(cls) -> frozenset[Width]:
@@ -174,6 +175,24 @@ POINTS: tuple[PointSpec, ...] = (
         "post-RoPE q/k with the checkpoint's own window, softcap and sinks reapplied",
     ),
     _p("z", _L, Width.HEADS, _HOOKS),
+    _p(
+        "gdn_q",
+        _L,
+        Width.GDN,
+        _NONE,
+        module_resolved=False,
+        note="unimplemented: GDN recurrence internals are currently instrumented on eager only",
+    ),
+    _p("gdn_k", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_v", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_alpha", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_beta", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_state_write", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_state_post", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_read", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_normed_read", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_z", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
+    _p("gdn_post_gate", _L, Width.GDN, _NONE, module_resolved=False, note="see gdn_q"),
     _p(
         "attn_gate",
         _L,

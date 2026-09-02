@@ -68,6 +68,13 @@ from interp_engine.chat_formatters import (
 from interp_engine.cuda_preflight import check_cuda_driver
 from interp_engine.dispatch import CAPABILITIES, Capability, CapabilityUnsupported, TokensLike
 from interp_engine.facts import rms_norm_eps_for_model
+from interp_engine.gdn import (
+    GDNInterventionContext,
+    GDNInterventionResult,
+    GDNTransform,
+    TokenPhase,
+    intervene_gdn,
+)
 from interp_engine.hooks import HookManager
 from interp_engine.lens import (
     apply_final_logit_softcap,
@@ -222,6 +229,12 @@ __all__ = [
     "rms_norm_parts",
     "run_with_cache",
     "split_fused_qkv",
+    # Qwen Gated DeltaNet recurrence capture/intervention.
+    "GDNInterventionContext",
+    "GDNInterventionResult",
+    "GDNTransform",
+    "TokenPhase",
+    "intervene_gdn",
     # Gradients: whether they are available, and the refusal when they are not.
     "BACKWARD_CAPABLE_ATTENTION_BACKENDS",
     "GradSupport",

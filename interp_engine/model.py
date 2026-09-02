@@ -1054,14 +1054,22 @@ class EagerModel:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _maybe_steer(self, steering_spec: Any, prompt_token_ids: torch.Tensor) -> AbstractContextManager[Any]:
+    def _maybe_steer(
+        self, steering_spec: Any, prompt_token_ids: torch.Tensor, steering_phase: Any = None
+    ) -> AbstractContextManager[Any]:
         """Steering context for ``steering_spec``, or a no-op when there is nothing to steer."""
+        from interp_engine.gdn import token_phase
         from interp_engine.steer import steer, steering_spec_to_eager_specs
 
         specs = steering_spec_to_eager_specs(steering_spec) if steering_spec is not None else []
         if not specs:
             return nullcontext()
-        return steer(self, specs, prompt_token_ids=prompt_token_ids)
+        return steer(
+            self,
+            specs,
+            prompt_token_ids=prompt_token_ids,
+            phase=token_phase(steering_phase),
+        )
 
     async def capture(
         self,
@@ -1070,6 +1078,8 @@ class EagerModel:
         *,
         steering_spec: Any = None,
         detach: bool = True,
+        positions: Any = None,
+        steering_phase: Any = None,
     ) -> dict[Address, torch.Tensor]:
         """Capture ``points`` over one prompt. See :meth:`interp_engine.protocol.InterpModel.capture`.
 
@@ -1083,8 +1093,8 @@ class EagerModel:
             self.grad_support.require_through_forward()
         addresses = [to_address(p) for p in points]
         input_ids = torch.tensor([[int(t) for t in prompt_token_ids]], device=self.device)
-        with self._maybe_steer(steering_spec, input_ids):
-            cache = run_with_cache(self, input_ids, addresses, detach=detach)
+        with self._maybe_steer(steering_spec, input_ids, steering_phase):
+            cache = run_with_cache(self, input_ids, addresses, detach=detach, positions=positions)
         if not detach:
             return {a: cache[a][0] for a in addresses}
         return {a: cache[a][0].cpu() for a in addresses}
@@ -1098,6 +1108,8 @@ class EagerModel:
         temperature: float = 0.0,
         seed: int | None = None,
         steering_spec: Any = None,
+        positions: Any = None,
+        steering_phase: Any = None,
     ) -> tuple[Any, dict[Address, torch.Tensor]]:
         """Generate, capturing at prompt AND generated positions.
 
@@ -1110,14 +1122,20 @@ class EagerModel:
         (``scripts/vllm_capture_generation_check.py``).
         """
         prompt_ids = [int(t) for t in prompt_token_ids]
-        with self._maybe_steer(steering_spec, torch.tensor([prompt_ids])):
+        with self._maybe_steer(steering_spec, torch.tensor([prompt_ids]), steering_phase):
             completion = self._generate_completion(prompt_ids, max_tokens, temperature, seed)
 
         # The last sampled token is never fed back through the model, so it has no
         # activations; dropping it here is what makes the captured length match vLLM's.
         gen_ids = list(completion.token_ids)
         processed = prompt_ids + gen_ids[: max(len(gen_ids) - 1, 0)]
-        caps = await self.capture(processed, points, steering_spec=steering_spec)
+        caps = await self.capture(
+            processed,
+            points,
+            steering_spec=steering_spec,
+            positions=positions,
+            steering_phase=steering_phase,
+        )
         return completion, caps
 
     async def capture_attention(self, prompt_token_ids: Any, layers: Any) -> dict[int, dict[str, torch.Tensor]]:

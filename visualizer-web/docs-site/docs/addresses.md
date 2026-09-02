@@ -55,9 +55,9 @@ legacy `"resid_post:5"` spelling raises too.
 Only unreserved URL characters are emitted, so an address needs no escaping in a query string, no
 quoting in a shell, and is a legal filename everywhere.
 
-## The 34 points
+## The 45 points
 
-27 on every model, and 7 more that need a hyper-connection trunk. Width is what the last axis
+38 on every model, and 7 more that need a hyper-connection trunk. Width is what the last axis
 counts.
 
 | point                       | width                   | what it is                                                        |
@@ -71,6 +71,15 @@ counts.
 | `attn_scores`               | `n_heads * query * key` | the QK matrix, before the softmax                                 |
 | `attn_probs`                | `n_heads * query * key` | the attention pattern, after it                                   |
 | `z`                         | `n_heads * head_dim`    | per-head attention output, before `W_O`                           |
+| `gdn_q` / `gdn_k`           | `heads × key_dim`       | recurrence-ready normalized Q/K on a Qwen GDN layer               |
+| `gdn_v`                     | `heads × value_dim`     | value entering the GDN recurrence                                 |
+| `gdn_alpha` / `gdn_beta`    | `heads`                 | state decay and write gates                                       |
+| `gdn_state_write`           | `heads × key_dim × value_dim` | current token's rank-1 state write                          |
+| `gdn_state_post`            | `heads × key_dim × value_dim` | state after decay and the current write                     |
+| `gdn_read`                  | `heads × value_dim`     | raw state read                                                    |
+| `gdn_normed_read`           | `heads × value_dim`     | read after RMSNorm and before z-gating                            |
+| `gdn_z`                     | `heads × value_dim`     | raw output-gate projection                                        |
+| `gdn_post_gate`             | `heads × value_dim`     | gated read immediately before `W_O`                               |
 | `attn_gate`                 | `n_heads * head_dim`    | the raw double-width projection, on a gated-attention model       |
 | `attn_out`                  | `d_model`               | attention's raw module output                                     |
 | `attn_out_post`             | `d_model`               | attention's residual contribution                                 |

@@ -250,6 +250,67 @@ async def capture_generation():
 The captured row count is `len(prompt) + len(generated) - 1`, one short of the total, because the
 final sampled token is never fed back through the model. That is autoregression, not a backend quirk.
 
+Pass `positions=[...]` to either capture API to retain only those absolute positions. Positions start
+at zero on the first prompt token and continue through fed-back generated tokens; the call does not
+wait for a relative generation index. For a prompt of length 250, position 300 is generated token 50
+when that token is fed back to predict token 51. Position 200 is still a prompt position.
+
+## Qwen Gated DeltaNet state
+
+Qwen3-Next and Qwen3.5 linear-attention layers expose the recurrence-local points `gdn_q`, `gdn_k`,
+`gdn_v`, `gdn_alpha`, `gdn_beta`, `gdn_state_write`, `gdn_state_post`, `gdn_read`,
+`gdn_normed_read`, `gdn_z`, and `gdn_post_gate` on the eager backend. Capture uses the ordinary API:
+
+```python
+cache = run_with_cache(
+    model,
+    tokens,
+    ["gdn_q.2", "gdn_state_post.2", "gdn_read.2"],
+    positions=[200],
+)
+```
+
+State matrices are large, so `gdn_state_write` and `gdn_state_post` require explicit positions. Q/K,
+V, alpha/beta, the state write/post-state, and the raw read are captured in fp32; normalized read,
+z, and post-gate output use model dtype. Q/K are the actual normalized, value-head-expanded tensors
+entering the recurrence, before the query's `1 / sqrt(key_dim)` scaling.
+
+`intervene_gdn` accepts arbitrary tensor callbacks rather than a menu of edit methods:
+
+```python
+from interp_engine import Address, TokenPhase, intervene_gdn
+
+
+def edit_state(state, context):
+    # state is [batch, heads, key_dim, value_dim] for this one position
+    return state + rank_one_edit.to(state)
+
+
+with intervene_gdn(
+    model,
+    {Address("gdn_state_post", 2): edit_state},
+    prompt_token_ids=tokens,
+    phase=TokenPhase.DECODE,
+    positions=[300],
+) as result:
+    completion, cache = capture_generation(model, tokens, ["gdn_read.2"], max_tokens=64, positions=[300])
+
+print(result.fired_positions, result.missed_positions)
+```
+
+Callbacks keep the batch axis and must preserve shape, dtype, and device. Their return is used
+exactly: Q/K are not automatically renormalized and alpha/beta are not clamped. Use a callback to do
+either operation when the experiment calls for it. `PREFILL`, `DECODE`, and `BOTH` select token
+processing phase; `DECODE` cannot alter the first sampled token because that token comes from prefill
+logits. With the 250-token prompt above, a decode-only request for positions `[200, 300]` reports 200
+as missed and fires at 300 if generation reaches it. vLLM explicitly refuses these recurrence-local
+points because its fused kernels do not expose the state.
+
+Sparse prefill state/read work stays chunked between selected positions. For example, an intervention
+at positions `[0, 1, 2, 3, 4]` executes those five recurrence steps explicitly, then resumes the
+original chunk kernel for position 5 through the end of the prompt. Omitting `positions` from a
+repeated state intervention necessarily uses the sequential reference for the entire prefill.
+
 ## Steer
 
 A steering spec is backend-agnostic: build one and either backend can apply it.
@@ -294,12 +355,12 @@ The same spec also works as a **context**, which is the form the sync free funct
 forward inside the block is steered, on either backend:
 
 ```python
-from interp_engine import capture_generation, generate_stream, load_model, steer
+from interp_engine import TokenPhase, capture_generation, generate_stream, load_model, steer
 
 model = load_model("google/gemma-2-2b-it")
 tokens = model.to_tokens("The capital of France is")
 
-with steer(model, spec):
+with steer(model, spec, phase=TokenPhase.DECODE):
     completion, acts = capture_generation(model, tokens, ["resid_post.10"], max_tokens=8)
     for step in generate_stream(model, tokens, max_tokens=8):
         print(step.token_str, end="")
@@ -308,6 +369,11 @@ with steer(model, spec):
 On vLLM the block registers the steer against each request it opens rather than installing a global
 hook, so a request co-batched with yours is unaffected. (`set_steering` is the global form, and is
 single-request use only for exactly that reason.)
+
+The same `TokenPhase.PREFILL`, `TokenPhase.DECODE`, and `TokenPhase.BOTH` option applies to ordinary
+steering on both backends. The default is `BOTH`. `position_mask` remains an exclusion mask over
+prompt positions; it is separate from the positive, absolute `positions` selector used by capture
+and GDN intervention.
 
 The eager backend also takes the lower-level `SteerSpec` list the spec compiles to, which the block
 refuses on vLLM — a list of those carries no layer grouping for the worker to register:

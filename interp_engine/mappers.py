@@ -179,6 +179,17 @@ UNMAPPED_TLENS: frozenset[str] = frozenset(
         "final_norm",  # `ln_final.hook_normalized` is outside the `blocks.{i}.` namespace
         "lm_head",  # TL returns logits rather than hooking the unembed
         "router_logits",  # TL hooks the softmax over all experts, not the logits
+        "gdn_q",
+        "gdn_k",
+        "gdn_v",
+        "gdn_alpha",
+        "gdn_beta",
+        "gdn_state_write",
+        "gdn_state_post",
+        "gdn_read",
+        "gdn_normed_read",
+        "gdn_z",
+        "gdn_post_gate",
         "expert_weights",  # TL's `hook_expert_weights` is pre-top-k, so it is a different tensor
     }
 )

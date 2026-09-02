@@ -1,6 +1,6 @@
 # Supported points
 
-The 34 canonical points, and whether each backend can serve one. The eager backend captures every
+The 45 canonical points, and whether each backend can serve one. The eager backend captures every
 point below; the vLLM backend serves 28 of them, 2 of those by recompute rather than by a hook.
 
 **Every point name below opens that point on the diagram** at [interp-engine.org](https://interp-engine.org),
@@ -20,6 +20,15 @@ nnsight and nnterp.
 | [`attn_scores`][attn_scores]                          | `n_heads * query * key` |  ✅   |  ♻️  | no module boundary holds the pre-softmax matrix on **either** backend; vLLM rebuilds it from captured post-RoPE q/k                                                                                                                       |
 | [`attn_probs`][attn_probs]                            | `n_heads * query * key` |  ✅   |  ♻️  | fused paged attention never materializes the probabilities; same recompute                                                                                                                                                                |
 | [`z`][z]                                              | `n_heads * head_dim`    |  ✅   |  ✅  | head-sharded, so single-GPU only                                                                                                                                                                                                          |
+| [`gdn_q`][gdn_q] / [`gdn_k`][gdn_k]                  | `heads × key_dim`       |  ✅   |  ❌  | recurrence-ready normalized Q/K, expanded to value-head count; eager Qwen GDN only                                                                                                                                                        |
+| [`gdn_v`][gdn_v]                                      | `heads × value_dim`     |  ✅   |  ❌  | post-convolution value entering the recurrence                                                                                                                                                                                            |
+| [`gdn_alpha`][gdn_alpha] / [`gdn_beta`][gdn_beta]     | `heads`                 |  ✅   |  ❌  | state decay multiplier and update gate                                                                                                                                                                                                    |
+| [`gdn_state_write`][gdn_state_write]                  | `heads × key_dim × value_dim` | ✅ | ❌ | current token's rank-1 write; explicit capture positions required                                                                                                                                                                         |
+| [`gdn_state_post`][gdn_state_post]                    | `heads × key_dim × value_dim` | ✅ | ❌ | state after decay and the current write; explicit capture positions required                                                                                                                                                              |
+| [`gdn_read`][gdn_read]                                | `heads × value_dim`     |  ✅   |  ❌  | raw fp32 state read, before casting back to model dtype                                                                                                                                                                                    |
+| [`gdn_normed_read`][gdn_normed_read]                  | `heads × value_dim`     |  ✅   |  ❌  | RMS-normalized read before output gating                                                                                                                                                                                                  |
+| [`gdn_z`][gdn_z]                                      | `heads × value_dim`     |  ✅   |  ❌  | raw output-gate projection                                                                                                                                                                                                                |
+| [`gdn_post_gate`][gdn_post_gate]                      | `heads × value_dim`     |  ✅   |  ❌  | normalized read after SiLU(z), immediately before `W_O`                                                                                                                                                                                   |
 | [`attn_gate`][attn_gate]                              | `n_heads * head_dim`    |  ✅   |  ❌  | unimplemented — a real module on both trees                                                                                                                                                                                               |
 | [`attn_out`][attn_out]                                | `d_model`               |  ✅   |  ✅  |                                                                                                                                                                                                                                           |
 | [`attn_out_post`][attn_out_post]                      | `d_model`               |  ✅   |  ✅  |                                                                                                                                                                                                                                           |
@@ -94,6 +103,17 @@ and the wrong tensor. Those measurements, and how the three that are activations
 [attn_scores]: https://interp-engine.org/?arch=Qwen3ForCausalLM&point=attn_scores.2
 [attn_probs]: https://interp-engine.org/?arch=Qwen3ForCausalLM&point=attn_probs.2
 [z]: https://interp-engine.org/?arch=Qwen3ForCausalLM&point=z.2
+[gdn_q]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_q.2
+[gdn_k]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_k.2
+[gdn_v]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_v.2
+[gdn_alpha]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_alpha.2
+[gdn_beta]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_beta.2
+[gdn_state_write]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_state_write.2
+[gdn_state_post]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_state_post.2
+[gdn_read]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_read.2
+[gdn_normed_read]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_normed_read.2
+[gdn_z]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_z.2
+[gdn_post_gate]: https://interp-engine.org/?arch=Qwen3_5ForConditionalGeneration&point=gdn_post_gate.2
 [attn_gate]: https://interp-engine.org/?arch=LagunaForCausalLM&point=attn_gate.2
 [attn_out]: https://interp-engine.org/?arch=Qwen3ForCausalLM&point=attn_out.2
 [attn_out_post]: https://interp-engine.org/?arch=Gemma3ForCausalLM&point=attn_out_post.2

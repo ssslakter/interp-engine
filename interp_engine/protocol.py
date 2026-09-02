@@ -184,6 +184,8 @@ class InterpModel(Protocol):
         *,
         steering_spec: Any = None,
         detach: bool = True,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> dict[Address, torch.Tensor]:
         """Capture ``points`` over one prompt's forward pass.
 
@@ -209,6 +211,10 @@ class InterpModel(Protocol):
         :attr:`grad_support` says gradients cannot flow through the forward -- which is always on
         vLLM, and on eager unless the model was built with ``requires_grad=True``. It never
         silently returns detached tensors instead.
+
+        ``positions`` keeps only the named zero-based absolute prompt positions. GDN recurrence
+        points are eager-only; capturing ``gdn_state_write`` or ``gdn_state_post`` requires this
+        selector explicitly because each row is a full state matrix.
         """
         ...
 
@@ -221,6 +227,8 @@ class InterpModel(Protocol):
         temperature: float = 0.0,
         seed: int | None = None,
         steering_spec: Any = None,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> tuple[Any, dict[Address, torch.Tensor]]:
         """Generate, capturing ``points`` at prompt AND generated positions.
 
@@ -228,6 +236,9 @@ class InterpModel(Protocol):
         The captured length is one short of prompt plus generated because the final sampled
         token is never fed back through the model -- autoregressive behavior, not a backend
         quirk.         ``completion`` exposes ``.text`` and ``.token_ids``.
+
+        ``positions`` uses the same absolute axis: prompt positions first, followed by generated
+        tokens when they are fed back. A position not reached before generation ends is refused.
         """
         ...
 

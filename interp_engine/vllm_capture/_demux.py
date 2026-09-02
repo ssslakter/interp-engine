@@ -81,6 +81,10 @@ class _Demux:
         self.cap_points: dict[str, set[Address]] = {}
         self.captures: dict[str, dict[str, list[torch.Tensor]]] = {}
         self.steer_mods: dict[str, dict[Address, Any]] = {}
+        # Number of rows each request/site has processed. Phase steering uses this absolute
+        # position cursor instead of guessing from chunk size, which would misclassify a one-token
+        # prompt and the last row of chunked prefill as decode.
+        self.steer_cursors: dict[tuple[str, Address], int] = {}
         self.lens_mods: dict[str, dict[Address, tuple]] = {}
         # How many capture rows each lens read-out request has consumed, so the worker can
         # place a drain's rows on the global position axis (see worker_lens_capture_readout).

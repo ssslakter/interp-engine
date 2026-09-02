@@ -1,7 +1,7 @@
 /**
  * Every point link in `docs/SUPPORTED_POINTS.md` opens a card, checked against the diagram itself.
  *
- * The doc links each of the 34 points to this app, and a link is only useful if the architecture in
+ * The doc links each canonical point to this app, and a link is only useful if the architecture in
  * it is one that *has* that point: a router on a dense family, `mlp_act` on a sparse layer or
  * `resid_streams` on a single-stream trunk all open a diagram with no card, which looks like the
  * link worked. So rather than trusting the URLs, this builds the graph each one asks for -- the same

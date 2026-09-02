@@ -216,9 +216,15 @@ class InterpWorkerExtension:
         return worker_drain_request(self, req_id)
 
     def register_steering(
-        self, req_id: str, specs: list[dict], skip_positions: list[int] | None = None, prompt_len: int = 0
+        self,
+        req_id: str,
+        specs: list[dict],
+        skip_positions: list[int] | None = None,
+        prompt_len: int = 0,
+        steer_prefill: bool = True,
+        steer_decode: bool = True,
     ) -> None:
-        return worker_register_steering(self, req_id, specs, skip_positions, prompt_len)
+        return worker_register_steering(self, req_id, specs, skip_positions, prompt_len, steer_prefill, steer_decode)
 
     def register_lens(
         self, req_id: str, specs: list[dict], steer_generated: bool, skip_positions: list[int], prompt_len: int

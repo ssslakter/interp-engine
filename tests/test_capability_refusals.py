@@ -20,7 +20,7 @@ import pytest
 import torch
 from harness import GPT2, load_model
 
-from interp_engine import Address, run_with_cache
+from interp_engine import Address, intervene_gdn, run_with_cache
 from interp_engine.dispatch import (
     CAPABILITIES,
     CapabilityUnsupported,
@@ -118,6 +118,16 @@ def test_decode_residuals_refuses_a_non_eager_model() -> None:
     """It promises raw logits, which no worker-side unembed can produce. See its docstring."""
     with pytest.raises(CapabilityUnsupported, match="decode_residuals"):
         decode_residuals(NotEager(), torch.zeros(2, 8))  # pyright: ignore[reportArgumentType]
+
+
+def test_gdn_intervention_refuses_a_non_eager_model_with_the_eager_alternative() -> None:
+    with (
+        pytest.raises(CapabilityUnsupported, match="backend='eager'"),
+        intervene_gdn(  # pyright: ignore[reportArgumentType]
+            NotEager(), {}, prompt_token_ids=[1, 2, 3]
+        ),
+    ):
+        pass
 
 
 def test_the_decode_residuals_refusal_points_at_the_call_that_works() -> None:

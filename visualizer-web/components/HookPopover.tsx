@@ -43,6 +43,7 @@ const WIDTH_LABEL: Record<Width, string> = {
   scores: "one pattern per head",
   vocab: "vocabulary wide",
   streams: "one per residual stream",
+  gdn: "structured GDN tensor",
 };
 
 const ROLE_TEXT: Record<Role, string> = {

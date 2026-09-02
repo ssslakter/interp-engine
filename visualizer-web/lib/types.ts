@@ -20,7 +20,8 @@ export type Width =
   | "routing"
   | "scores"
   | "vocab"
-  | "streams";
+  | "streams"
+  | "gdn";
 
 /** Structural role, which is also the point's colour. */
 export type Role = "resid" | "attn" | "mlp" | "route" | "global";

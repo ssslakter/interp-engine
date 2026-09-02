@@ -1551,6 +1551,7 @@ class VLLMModel:
         position_mask: Any = None,
         prompt_token_ids: Sequence[int] | None = None,
         lens_scope: dict | None = None,
+        steering_phase: Any = None,
     ) -> None:
         """Per-request static write. ``position_mask`` becomes skip_positions on the wrap."""
         from interp_engine.steer import resolve_masked_positions
@@ -1564,6 +1565,15 @@ class VLLMModel:
                 position_mask, prompt_token_ids=ids, tokenizer=getattr(self, "tokenizer", None)
             )
             prompt_len = len(ids)
+            if steering_phase is not None:
+                from interp_engine.gdn import TokenPhase
+
+                lens_scope = {
+                    "steer_prefill": steering_phase is not TokenPhase.DECODE,
+                    "steer_generated": steering_phase is not TokenPhase.PREFILL,
+                    "skip_positions": skip,
+                    "prompt_len": prompt_len,
+                }
         await self.engine.collective_rpc(
             "register_static_write",
             args=(rid, specs, skip, prompt_len, lens_scope),
@@ -1614,6 +1624,7 @@ class VLLMModel:
         *,
         steering_spec: Any = None,
         position_mask: Any = None,
+        steering_phase: Any = None,
         stream: bool = False,
         capture_points: Sequence[Address | str | tuple[str, int]] | None = None,
         capture_out: dict[Address, torch.Tensor] | None = None,
@@ -1642,6 +1653,7 @@ class VLLMModel:
             sampling_params,
             steering_spec=steering_spec,
             position_mask=position_mask,
+            steering_phase=steering_phase,
             stream=stream,
             capture_points=capture_points,
             capture_out=capture_out,
@@ -1655,6 +1667,7 @@ class VLLMModel:
         *,
         steering_spec: Any = None,
         position_mask: Any = None,
+        steering_phase: Any = None,
         stream: bool = False,
         capture_points: Sequence[Address | str | tuple[str, int]] | None = None,
         capture_out: dict[Address, torch.Tensor] | None = None,
@@ -1684,6 +1697,7 @@ class VLLMModel:
         ``collective_rpc``, so this trades a small per-request RPC count against holding
         a ``[prompt + generated, hidden]`` tensor on every GPU for the whole generation.
         """
+        from interp_engine.gdn import TokenPhase, token_phase
         from interp_engine.steer import resolve_masked_positions
 
         await self._ensure_engine()
@@ -1694,6 +1708,7 @@ class VLLMModel:
         if steered and not (self.hooks_available or self._use_static_writes()):
             self._require_hooks("Steered generation")
         token_ids = [int(t) for t in prompt_token_ids]
+        phase = token_phase(steering_phase)
         rid = self._new_request_id("np-steer")
         prompt = self._prompt(token_ids, private_kv_for=rid if (capturing or steered) else None)
         pts: list[str] = []
@@ -1710,7 +1725,11 @@ class VLLMModel:
         static_write = steered and self._use_static_writes()
         if static_write:
             await self._register_static_write(
-                rid, worker_specs, position_mask=position_mask, prompt_token_ids=token_ids
+                rid,
+                worker_specs,
+                position_mask=position_mask,
+                prompt_token_ids=token_ids,
+                steering_phase=phase,
             )
         if capturing and not static_cap:
             await self.engine.collective_rpc("register_capture", args=(rid, pts))
@@ -1722,7 +1741,14 @@ class VLLMModel:
             )
             await self.engine.collective_rpc(
                 "register_steering",
-                args=(rid, worker_specs, skip_positions, len(token_ids)),
+                args=(
+                    rid,
+                    worker_specs,
+                    skip_positions,
+                    len(token_ids),
+                    phase is not TokenPhase.DECODE,
+                    phase is not TokenPhase.PREFILL,
+                ),
             )
 
         async def _finish() -> None:
@@ -1772,6 +1798,7 @@ class VLLMModel:
         *,
         steering_spec: Any = None,
         position_mask: Any = None,
+        steering_phase: Any = None,
     ):
         """Stream this request's ``RequestOutput``s, with a per-request steer if one was given.
 
@@ -1785,6 +1812,7 @@ class VLLMModel:
         things off them -- text deltas for the SSE path, per-token ids and logprobs for
         :meth:`generate_steps`.
         """
+        from interp_engine.gdn import TokenPhase, token_phase
         from interp_engine.steer import resolve_masked_positions
 
         await self._ensure_engine()
@@ -1792,6 +1820,7 @@ class VLLMModel:
         if steered and not (self.hooks_available or self._use_static_writes()):
             self._require_hooks("Steered generation")
         token_ids = [int(t) for t in prompt_token_ids]
+        phase = token_phase(steering_phase)
         rid = self._new_request_id("np-steer" if steered else "np-steps")
         prompt = self._prompt(token_ids, private_kv_for=rid if steered else None)
         worker_specs: list[dict] = []
@@ -1802,7 +1831,7 @@ class VLLMModel:
             self._require_static_writes(worker_specs, "Steered generation")
             if self._use_static_writes():
                 await self._register_static_write(
-                    rid, worker_specs, position_mask=position_mask, prompt_token_ids=token_ids
+                    rid, worker_specs, position_mask=position_mask, prompt_token_ids=token_ids, steering_phase=phase
                 )
                 static_write = True
             else:
@@ -1811,7 +1840,14 @@ class VLLMModel:
                 )
                 await self.engine.collective_rpc(
                     "register_steering",
-                    args=(rid, worker_specs, skip_positions, len(token_ids)),
+                    args=(
+                        rid,
+                        worker_specs,
+                        skip_positions,
+                        len(token_ids),
+                        phase is not TokenPhase.DECODE,
+                        phase is not TokenPhase.PREFILL,
+                    ),
                 )
         try:
             async for out in self.engine.generate(prompt, sampling_params, rid):
@@ -2000,6 +2036,7 @@ class VLLMModel:
         seed: int | None = None,
         steering_spec: Any = None,
         position_mask: Any = None,
+        steering_phase: Any = None,
     ):
         """Yield one :class:`~interp_engine.steer.GenStep` per generated token.
 
@@ -2043,7 +2080,11 @@ class VLLMModel:
 
         emitted = 0
         async for out in self._generate_request_outputs(
-            prompt_token_ids, sampling, steering_spec=steering_spec, position_mask=position_mask
+            prompt_token_ids,
+            sampling,
+            steering_spec=steering_spec,
+            position_mask=position_mask,
+            steering_phase=steering_phase,
         ):
             completion = out.outputs[0]
             token_ids, logprobs = completion.token_ids, completion.logprobs
@@ -2085,6 +2126,8 @@ class VLLMModel:
         *,
         steering_spec: Any = None,
         detach: bool = True,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> dict[Address, torch.Tensor]:
         """Async per-request worker-hook capture for a single prompt (concurrency-safe).
 
@@ -2100,6 +2143,8 @@ class VLLMModel:
         ``downstream`` half of :attr:`grad_support`.
         """
         from vllm import SamplingParams  # pyright: ignore[reportMissingImports]
+
+        from interp_engine.gdn import TokenPhase, token_phase
 
         if not detach:
             self.grad_support.require_through_forward()
@@ -2120,10 +2165,26 @@ class VLLMModel:
         else:
             await self.engine.collective_rpc("register_capture", args=(rid, pts))
         if steered and self._use_static_writes():
-            await self._register_static_write(rid, worker_specs, prompt_token_ids=prompt_token_ids)
+            await self._register_static_write(
+                rid,
+                worker_specs,
+                prompt_token_ids=prompt_token_ids,
+                steering_phase=token_phase(steering_phase),
+            )
             static_write = True
         elif steered:
-            await self.engine.collective_rpc("register_steering", args=(rid, worker_specs))
+            phase = token_phase(steering_phase)
+            await self.engine.collective_rpc(
+                "register_steering",
+                args=(
+                    rid,
+                    worker_specs,
+                    [],
+                    len(prompt_token_ids),
+                    phase is not TokenPhase.DECODE,
+                    phase is not TokenPhase.PREFILL,
+                ),
+            )
         try:
             await self._run_one(
                 self._prompt(prompt_token_ids, private_kv_for=rid),
@@ -2143,6 +2204,13 @@ class VLLMModel:
         _assert_points_captured(out, pts)
         _assert_full_prompt_captured(out, len(prompt_token_ids))
         _assert_full_width_captured(out, self._hidden_size)
+        if positions is not None:
+            selected = tuple(int(position) for position in positions)
+            if len(set(selected)) != len(selected) or any(
+                position < 0 or position >= len(prompt_token_ids) for position in selected
+            ):
+                raise ValueError(f"capture positions must be unique and within the prompt, got {selected}")
+            out = {address: tensor[selected] for address, tensor in out.items()}
         return out
 
     async def capture_generation(
@@ -2155,6 +2223,8 @@ class VLLMModel:
         seed: int | None = None,
         steering_spec: Any = None,
         lens_intervention: dict | None = None,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> tuple[Any, dict[Address, torch.Tensor]]:
         """Generate + capture ``points`` at prompt AND generated positions (decode-time).
 
@@ -2169,6 +2239,8 @@ class VLLMModel:
         reflect the intervention. Single request-locked use.
         """
         from vllm import SamplingParams  # pyright: ignore[reportMissingImports]
+
+        from interp_engine.gdn import TokenPhase, token_phase
 
         pts = _validate_hook_points(points, self._basis_if_loaded())
         self._require_capture_points(pts, "Capture during generation")
@@ -2194,10 +2266,26 @@ class VLLMModel:
             worker_specs = self._steer_specs(steering_spec)
             self._require_static_writes(worker_specs, "Steered generation")
             if self._use_static_writes():
-                await self._register_static_write(rid, worker_specs, prompt_token_ids=prompt_token_ids)
+                await self._register_static_write(
+                    rid,
+                    worker_specs,
+                    prompt_token_ids=prompt_token_ids,
+                    steering_phase=token_phase(steering_phase),
+                )
                 static_write = True
             else:
-                await self.engine.collective_rpc("register_steering", args=(rid, worker_specs))
+                phase = token_phase(steering_phase)
+                await self.engine.collective_rpc(
+                    "register_steering",
+                    args=(
+                        rid,
+                        worker_specs,
+                        [],
+                        len(prompt_token_ids),
+                        phase is not TokenPhase.DECODE,
+                        phase is not TokenPhase.PREFILL,
+                    ),
+                )
         if lens:
             assert lens_intervention is not None
             if self._use_static_writes():
@@ -2233,6 +2321,16 @@ class VLLMModel:
         caps = decode_capture_payload(payloads[0] if isinstance(payloads, list | tuple) else payloads)
         _assert_points_captured(caps, pts)
         _assert_full_width_captured(caps, self._hidden_size)
+        if positions is not None:
+            selected = tuple(int(position) for position in positions)
+            available = next(iter(caps.values())).shape[0] if caps else 0
+            if len(set(selected)) != len(selected) or any(
+                position < 0 or position >= available for position in selected
+            ):
+                raise ValueError(
+                    f"capture positions must be unique and within {available} processed tokens, got {selected}"
+                )
+            caps = {address: tensor[selected] for address, tensor in caps.items()}
         return out.outputs[0], caps
 
     async def capture_generation_stream(

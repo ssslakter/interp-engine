@@ -103,13 +103,29 @@ def _process_point(demux: _Demux, site: Address, full: torch.Tensor) -> torch.Te
             seg = modified[start:end]
             delta = torch.zeros_like(seg)
             if steer_entry is not None:
-                steer_fn, steer_skip, steer_prompt_len = steer_entry
+                if len(steer_entry) == 3:  # registrations made by pre-phase API callers/tests
+                    steer_fn, steer_skip, steer_prompt_len = steer_entry
+                    steer_prefill = steer_decode = True
+                else:
+                    steer_fn, steer_skip, steer_prompt_len, steer_prefill, steer_decode = steer_entry
                 num_tokens = end - start
-                sdelta = delta + steer_fn(seg)  # broadcast add ([width] or [T,width]) -> [T,width]
-                # Leave skipped prompt positions unsteered on the full prefill only.
-                if steer_skip and num_tokens == steer_prompt_len:
-                    smask = _position_mask(steer_skip, num_tokens, sdelta)
-                    sdelta = torch.where(smask, torch.zeros_like(sdelta), sdelta)
+                cursor_key = (rid, site)
+                first = demux.steer_cursors.get(cursor_key, 0)
+                demux.steer_cursors[cursor_key] = first + num_tokens
+                sdelta = delta + steer_fn(seg)
+                absolute = torch.arange(first, first + num_tokens, device=seg.device)
+                enabled = torch.where(
+                    absolute < steer_prompt_len,
+                    torch.tensor(steer_prefill, device=seg.device),
+                    torch.tensor(steer_decode, device=seg.device),
+                )
+                if steer_skip:
+                    skipped = torch.zeros(num_tokens, dtype=torch.bool, device=seg.device)
+                    for position in steer_skip:
+                        skipped |= absolute == int(position)
+                    enabled &= ~skipped
+                enabled = enabled.view(num_tokens, *([1] * (sdelta.ndim - 1)))
+                sdelta = torch.where(enabled, sdelta, torch.zeros_like(sdelta))
                 delta = sdelta
             if lens_entry is not None:
                 lfn, steer_generated, skip_set, prompt_len = lens_entry
@@ -635,6 +651,8 @@ def worker_register_steering(
     specs: list[dict],
     skip_positions: list[int] | None = None,
     prompt_len: int = 0,
+    steer_prefill: bool = True,
+    steer_decode: bool = True,
 ) -> None:
     """Register additive/projection-cap steering for ``req_id`` (see :func:`worker_install_steering`).
 
@@ -651,7 +669,13 @@ def worker_register_steering(
     skip_set = {int(i) for i in (skip_positions or [])}
     for s in specs:
         site = _write_site(worker, s)
-        mods[site] = (_make_steer_modifier(s, demux.dev, demux.dt), skip_set, int(prompt_len))
+        mods[site] = (
+            _make_steer_modifier(s, demux.dev, demux.dt),
+            skip_set,
+            int(prompt_len),
+            bool(steer_prefill),
+            bool(steer_decode),
+        )
         _ensure_hook(worker, demux, site)
 
 
@@ -694,6 +718,7 @@ def worker_unregister_steering(worker: object, req_id: str) -> None:
     demux = _get_demux(worker)
     for site in demux.steer_mods.pop(req_id, {}):
         _release_hook(demux, site)
+        demux.steer_cursors.pop((req_id, site), None)
     for site in demux.lens_mods.pop(req_id, {}):
         _release_hook(demux, site)
     _maybe_unregister(demux, req_id)

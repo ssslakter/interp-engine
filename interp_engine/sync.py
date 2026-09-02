@@ -167,9 +167,18 @@ class SyncModel:
         *,
         steering_spec: Any = None,
         detach: bool = True,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> dict[Address, torch.Tensor]:
         return self._runner.run(
-            self._model.capture(prompt_token_ids, points, steering_spec=steering_spec, detach=detach),
+            self._model.capture(
+                prompt_token_ids,
+                points,
+                steering_spec=steering_spec,
+                detach=detach,
+                positions=positions,
+                steering_phase=steering_phase,
+            ),
             what="capture()",
         )
 
@@ -182,6 +191,8 @@ class SyncModel:
         temperature: float = 0.0,
         seed: int | None = None,
         steering_spec: Any = None,
+        positions: Sequence[int] | None = None,
+        steering_phase: Any = None,
     ) -> tuple[Any, dict[Address, torch.Tensor]]:
         return self._runner.run(
             self._model.capture_generation(
@@ -191,6 +202,8 @@ class SyncModel:
                 temperature=temperature,
                 seed=seed,
                 steering_spec=steering_spec,
+                positions=positions,
+                steering_phase=steering_phase,
             ),
             what="capture_generation()",
         )

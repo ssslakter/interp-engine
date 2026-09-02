@@ -117,6 +117,21 @@ const SOFTMAX_ONLY = new Set([
   "z",
 ]);
 
+/** Recurrence locals that exist only on a linear-attention layer. */
+const GDN_ONLY = new Set([
+  "gdn_q",
+  "gdn_k",
+  "gdn_v",
+  "gdn_alpha",
+  "gdn_beta",
+  "gdn_state_write",
+  "gdn_state_post",
+  "gdn_read",
+  "gdn_normed_read",
+  "gdn_z",
+  "gdn_post_gate",
+]);
+
 // --- the wiring -------------------------------------------------------------
 
 /**
@@ -128,7 +143,17 @@ function successorsFor(parallel: boolean): Record<PointName, PointName[]> {
   const attn: Record<PointName, PointName[]> = {
     attn_stream_mix: ["attn_stream_collapse"],
     attn_stream_collapse: ["attn_in"],
-    attn_in: ["q_norm_in", "k_norm_in", "value"],
+    attn_in: [
+      "q_norm_in",
+      "k_norm_in",
+      "value",
+      "gdn_q",
+      "gdn_k",
+      "gdn_v",
+      "gdn_alpha",
+      "gdn_beta",
+      "gdn_z",
+    ],
     q_norm_in: ["q_norm_out"],
     q_norm_out: ["attn_scores"],
     k_norm_in: ["k_norm_out"],
@@ -137,6 +162,17 @@ function successorsFor(parallel: boolean): Record<PointName, PointName[]> {
     attn_scores: ["attn_probs"],
     attn_probs: ["z"],
     z: ["attn_gate"],
+    gdn_q: ["gdn_read"],
+    gdn_k: ["gdn_state_write"],
+    gdn_v: ["gdn_state_write"],
+    gdn_alpha: ["gdn_state_post"],
+    gdn_beta: ["gdn_state_write"],
+    gdn_state_write: ["gdn_state_post"],
+    gdn_state_post: ["gdn_read"],
+    gdn_read: ["gdn_normed_read"],
+    gdn_normed_read: ["gdn_post_gate"],
+    gdn_z: ["gdn_post_gate"],
+    gdn_post_gate: ["attn_out"],
     attn_gate: ["attn_out"],
     attn_out: ["attn_out_post"],
     attn_out_post: ["attn_stream_write"],
@@ -428,6 +464,19 @@ function buildLayer(ctx: Ctx, plan: LayerPlan): BuiltLayer {
     [{ point: "attn_scores", row: -1 }],
     [{ point: "attn_probs", row: -1 }],
     [{ point: "z", row: -1 }],
+    [
+      { point: "gdn_q", row: -6 },
+      { point: "gdn_k", row: -5 },
+      { point: "gdn_v", row: -4 },
+      { point: "gdn_alpha", row: -3 },
+      { point: "gdn_beta", row: -2 },
+      { point: "gdn_z", row: -1 },
+    ],
+    [{ point: "gdn_state_write", row: -3 }],
+    [{ point: "gdn_state_post", row: -3 }],
+    [{ point: "gdn_read", row: -2 }],
+    [{ point: "gdn_normed_read", row: -2 }],
+    [{ point: "gdn_post_gate", row: -1 }],
     [{ point: "attn_gate", row: -1 }],
     [{ point: "attn_out", row: -1 }],
     [{ point: "attn_out_post", row: -1 }],
@@ -489,6 +538,7 @@ function buildLayer(ctx: Ctx, plan: LayerPlan): BuiltLayer {
   const byPoint = new Map<PointName, GraphNode[]>();
   for (const [point, { col: c, row }] of placed) {
     if (!exists(point, ctx, isMoe)) continue;
+    if (!linear && GDN_ONLY.has(point)) continue;
     const refusal =
       linear && SOFTMAX_ONLY.has(point) ? LINEAR_LAYER_REFUSAL : null;
     const x = x0 + c * COL_W;
@@ -693,6 +743,9 @@ function rowFanouts(
     out.set(-3, kv);
     out.set(-4, dims.heads);
   }
+  if (traits.has("hybrid_linear_attn")) {
+    for (const row of [-3, -4, -5, -6]) out.set(row, dims.heads);
+  }
 
   const sparse = traits.has("moe");
   const beside = traits.has("dense_mlp_beside_experts");
@@ -737,6 +790,8 @@ function fanoutFor(spec: PointSpec, ctx: Ctx): number {
       return spec.name === "router_logits" ? dims.experts : dims.activeExperts;
     case "streams":
       return traits.has("multi_residual_streams") ? dims.streams : 1;
+    case "gdn":
+      return dims.heads;
     default:
       return 1;
   }

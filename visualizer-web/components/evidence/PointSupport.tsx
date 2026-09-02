@@ -48,7 +48,7 @@ export function PointSupport() {
       <div className="thin-scrollbar mt-2 max-h-[min(46dvh,300px)] overflow-y-auto overscroll-contain">
         <table className="w-full border-collapse text-left text-[10px]">
           {/* Sticky, because the two columns are only telling you apart while
-              their headings are on screen, and this table is 34 rows in 300px. */}
+              their headings are on screen, and this table is dozens of rows in 300px. */}
           <thead className="sticky top-0 bg-white">
             <tr className="text-[9px] tracking-wide text-slate-400">
               <th className="pb-1 pr-2 font-medium uppercase">point</th>
@@ -82,7 +82,7 @@ export function PointSupport() {
 }
 
 /**
- * Five columns, filled down then across. 34 names at seven rows is one empty
+ * Five columns, filled down then across. The row count follows the point registry,
  * cell; six rows was six columns, which the narrower tour dialog cannot hold
  * without a long sideways scroll.
  */

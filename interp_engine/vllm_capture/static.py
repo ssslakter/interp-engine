@@ -605,7 +605,9 @@ class _WriteReq:
     vector: torch.Tensor | None = None
     skip_positions: tuple[int, ...] = ()
     prompt_len: int = 0
+    steer_prefill: bool = True
     steer_generated: bool = True
+    cursor: int = 0
 
 
 @dataclass(eq=False)
@@ -1504,7 +1506,9 @@ def _apply_lens_scope(delta: torch.Tensor, n: int, scope: dict[str, Any] | None)
     if not scope:
         return delta
     is_prefill = n > 1
-    if not bool(scope.get("steer_generated", True)) and not is_prefill:
+    if is_prefill and not bool(scope.get("steer_prefill", True)):
+        return None
+    if not is_prefill and not bool(scope.get("steer_generated", True)):
         return None
     skip = scope.get("skip_positions") or []
     prompt_len = int(scope.get("prompt_len") or 0)
@@ -1585,17 +1589,20 @@ def _apply_one_write(
         delta = torch.zeros_like(rows) + wr.vector.to(dtype=rows.dtype, device=rows.device)
     else:
         return
-    delta = _apply_lens_scope(
-        delta,
-        n,
-        {
-            "steer_generated": wr.steer_generated,
-            "skip_positions": list(wr.skip_positions),
-            "prompt_len": wr.prompt_len,
-        },
+    absolute = torch.arange(wr.cursor, wr.cursor + n, device=rows.device)
+    wr.cursor += n
+    enabled = torch.where(
+        absolute < wr.prompt_len,
+        torch.tensor(wr.steer_prefill, device=rows.device),
+        torch.tensor(wr.steer_generated, device=rows.device),
     )
-    if delta is None:
-        return
+    if wr.skip_positions:
+        skipped = torch.zeros(n, dtype=torch.bool, device=rows.device)
+        for position in wr.skip_positions:
+            skipped |= absolute == position
+        enabled &= ~skipped
+    enabled = enabled.view(n, *([1] * (delta.ndim - 1)))
+    delta = torch.where(enabled, delta, torch.zeros_like(delta))
     rows.add_(delta.to(dtype=rows.dtype, device=rows.device))
 
 
@@ -1752,6 +1759,7 @@ def _compile_write_req(
     skip_positions: tuple[int, ...],
     prompt_len: int,
     steer_generated: bool,
+    steer_prefill: bool = True,
 ) -> _WriteReq:
     op = str(spec.get("op", "add"))
     if op not in _STATIC_WRITE_OPS:
@@ -1767,6 +1775,7 @@ def _compile_write_req(
             vector=vec,
             skip_positions=skip_positions,
             prompt_len=prompt_len,
+            steer_prefill=steer_prefill,
             steer_generated=steer_generated,
         )
     from interp_engine.vllm_capture.lens.intervene import _make_lens_modifier
@@ -1777,6 +1786,7 @@ def _compile_write_req(
         modify=modify,
         skip_positions=skip_positions,
         prompt_len=prompt_len,
+        steer_prefill=steer_prefill,
         steer_generated=steer_generated,
     )
 
@@ -1794,17 +1804,24 @@ def worker_register_static_write(
     if static is None:
         raise RuntimeError("register_static_write: this worker has no static wraps")
     skip = tuple(int(i) for i in (skip_positions or []))
+    prefill = True
     generated = True
     length = int(prompt_len)
     if lens_scope:
         skip = tuple(int(i) for i in (lens_scope.get("skip_positions") or skip))
         length = int(lens_scope.get("prompt_len") or length)
+        prefill = bool(lens_scope.get("steer_prefill", True))
         generated = bool(lens_scope.get("steer_generated", False))
     by_site: dict[str, _WriteReq] = {}
     for spec in specs:
         site = _write_site(static, Address(str(spec.get("point") or "resid_post"), int(spec["layer"])))
         by_site[format_address(site.address)] = _compile_write_req(
-            spec, site, skip_positions=skip, prompt_len=length, steer_generated=generated
+            spec,
+            site,
+            skip_positions=skip,
+            prompt_len=length,
+            steer_prefill=prefill,
+            steer_generated=generated,
         )
     static.write_reqs[req_id] = by_site
     static.registered.add(req_id)

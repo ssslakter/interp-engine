@@ -184,7 +184,7 @@ Canonical names, with the layer after a dot: `resid_post.10`. Extra coordinates 
 
 Eager-only is not an omission: vLLM's fused MLP and MoE kernels compute those tensors inline, so
 there is no module boundary to hook. This table is the working subset;
-[SUPPORTED_POINTS.md](SUPPORTED_POINTS.md) is all 34 points with the per-backend verdict on each,
+[SUPPORTED_POINTS.md](SUPPORTED_POINTS.md) is all 45 points with the per-backend verdict on each,
 and it is checked against the registry rather than maintained by hand.
 
 Attention is the one row that reads "both" with a caveat. No boundary holds a score matrix on either
